@@ -1,34 +1,29 @@
-#include <ros/ros.h>
-
-#include "std_msgs/String.h"
+#include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 
 int main(int argc, char** argv)
 {
+    rclcpp::init(argc, argv);
 
-    ros::init(argc, argv, "talker");
+    auto node = rclcpp::Node::make_shared("talker");
 
-    ros::NodeHandle n;
+    auto chatter_pub = node->create_publisher<std_msgs::msg::String>("chatter", 10);
 
-    ros::Publisher chatter_pub = n.advertise<std_msgs::String>("chatter", 1000);
+    rclcpp::Rate loop_rate(10);
 
-
-    ros::Rate loop_rate(10);
-
-    while(ros::ok())
-    {
-        std_msgs::String msg;
+    while (rclcpp::ok()) {
+        auto msg = std_msgs::msg::String();
         msg.data = "Hello World!";
 
-        ROS_INFO("%s", msg.data.c_str());
+        RCLCPP_INFO(node->get_logger(), "%s", msg.data.c_str());
 
-        chatter_pub.publish(msg);
+        chatter_pub->publish(msg);
 
-        ros::spinOnce();
+        rclcpp::spin_some(node);
 
         loop_rate.sleep();
-
     }
 
+    rclcpp::shutdown();
     return 0;
-
 }

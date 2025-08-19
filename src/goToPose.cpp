@@ -1,118 +1,129 @@
-#include <ros/ros.h>
-// MoveIt
+#include <memory>
+#include <chrono>
+#include <thread>
+
+// ROS 2
+#include <rclcpp/rclcpp.hpp>
+
+// MoveIt 2
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/move_group_interface/move_group_interface.h>
-// TF2
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <geometry_msgs/Pose.h>
-// tau = 1 rotation in radiants
-const double tau = 2 * M_PI;
 
+// Messages
+#include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
 
-void plan_move(moveit::planning_interface::MoveGroupInterface& move_group)
+// TF2 (ROS 2 headers use .hpp)
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+using moveit::planning_interface::MoveGroupInterface;
+using moveit::planning_interface::PlanningSceneInterface;
+
+static constexpr double tau = 2.0 * M_PI;  // not used below, but kept if you need it
+
+void addCollisionObject(PlanningSceneInterface& planning_scene_interface,
+                        const rclcpp::Logger& logger)
 {
-    move_group.setEndEffectorLink("fr3_link_pip_tip");  // Adjust to your robot's EE link
-    move_group.setPoseReferenceFrame("world");
+  std::vector<moveit_msgs::msg::CollisionObject> collision_objects(1);
 
-    geometry_msgs::PoseStamped current_pose;
-    current_pose = move_group.getCurrentPose();
-    ROS_INFO("current orientation x: %f",current_pose.pose.orientation.x);
-    ROS_INFO("current orientation y: %f",current_pose.pose.orientation.y);
-    ROS_INFO("current orientation z: %f",current_pose.pose.orientation.z);
-    ROS_INFO("current orientation w: %f",current_pose.pose.orientation.w);
+  // Add the table
+  auto& table = collision_objects[0];
+  table.id = "table";
+  table.header.frame_id = "fr3_link0";
 
-    geometry_msgs::Pose target_pose1;
-    target_pose1.orientation.x = 0.0;
-    target_pose1.orientation.y = 0.0;
-    target_pose1.orientation.z = 0.0;
-    target_pose1.orientation.w = 0.0;
-    target_pose1.position.x = 0.625;
-    target_pose1.position.y = 0.1; //0.025;
-    target_pose1.position.z = 0.2;
+  table.primitives.resize(1);
+  table.primitives[0].type = table.primitives[0].BOX;
+  table.primitives[0].dimensions = {0.8, 0.8, 0.02};
 
-    if (!move_group.setPoseTarget(target_pose1)) {
-        ROS_WARN("Pose target is invalid or not accepted.");
-        return;
-    }
+  table.primitive_poses.resize(1);
+  table.primitive_poses[0].position.x = 0.6;
+  table.primitive_poses[0].position.y = 0.0;
+  table.primitive_poses[0].position.z = 0.01;
+  table.primitive_poses[0].orientation.w = 1.0;
 
-    moveit::planning_interface::MoveGroupInterface::Plan my_plan;
-    bool success = (move_group.plan(my_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    ROS_INFO("Visualizing plan 1 (pose goal) %s", success ? "SUCCESS" : "FAILED");
+  table.operation = table.ADD;
+
+  planning_scene_interface.applyCollisionObjects(collision_objects);
+  RCLCPP_INFO(logger, "Added collision object: table");
 }
 
-
-void execute_move(moveit::planning_interface::MoveGroupInterface& move_group)
+void plan_move(MoveGroupInterface& move_group, const rclcpp::Logger& logger)
 {
-    move_group.setGoalJointTolerance(0.001);
-    move_group.setGoalPositionTolerance(0.001);
-    move_group.setGoalOrientationTolerance(0.01);
+  move_group.setEndEffectorLink("fr3_link_pip_tip");   // adjust to your EE link
+  move_group.setPoseReferenceFrame("world");
 
-    bool success = (move_group.move() == moveit::core::MoveItErrorCode::SUCCESS);
-    ROS_INFO("Execution %s", success ? "SUCCESS" : "FAILED");
-    
+  geometry_msgs::msg::PoseStamped current_pose = move_group.getCurrentPose();
+  RCLCPP_INFO(logger, "current orientation x: %f", current_pose.pose.orientation.x);
+  RCLCPP_INFO(logger, "current orientation y: %f", current_pose.pose.orientation.y);
+  RCLCPP_INFO(logger, "current orientation z: %f", current_pose.pose.orientation.z);
+  RCLCPP_INFO(logger, "current orientation w: %f", current_pose.pose.orientation.w);
+
+  geometry_msgs::msg::Pose target_pose1;
+  // Use a valid quaternion; w=1, x=y=z=0 is identity
+  target_pose1.orientation.x = 0.0;
+  target_pose1.orientation.y = 0.0;
+  target_pose1.orientation.z = 0.0;
+  target_pose1.orientation.w = 1.0;
+
+  target_pose1.position.x = 0.625;
+  target_pose1.position.y = 0.10;
+  target_pose1.position.z = 0.20;
+
+  if (!move_group.setPoseTarget(target_pose1)) {
+    RCLCPP_WARN(logger, "Pose target is invalid or not accepted.");
+    return;
+  }
+
+  MoveGroupInterface::Plan my_plan;
+  bool success = (move_group.plan(my_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+  RCLCPP_INFO(logger, "Planning (pose goal): %s", success ? "SUCCESS" : "FAILED");
 }
 
-void addCollisionObject(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface)
+void execute_move(MoveGroupInterface& move_group, const rclcpp::Logger& logger)
 {
-    std::vector<moveit_msgs::CollisionObject> collision_objects;
-    collision_objects.resize(1);
+  move_group.setGoalJointTolerance(1e-3);
+  move_group.setGoalPositionTolerance(1e-3);
+  move_group.setGoalOrientationTolerance(1e-2);
 
-    //Add the table
-    collision_objects[0].id = "table";
-    collision_objects[0].header.frame_id = "fr3_link0";
-
-    //Dimensions of the table
-    collision_objects[0].primitives.resize(1);
-    collision_objects[0].primitives[0].type = collision_objects[0].primitives[0].BOX;
-    collision_objects[0].primitives[0].dimensions.resize(3);
-    collision_objects[0].primitives[0].dimensions[0] = 0.8;
-    collision_objects[0].primitives[0].dimensions[1] = 0.8;
-    collision_objects[0].primitives[0].dimensions[2] = 0.02;
-
-    //Pose of the table
-    collision_objects[0].primitive_poses.resize(1);
-    collision_objects[0].primitive_poses[0].position.x = 0.6;
-    collision_objects[0].primitive_poses[0].position.y = 0;
-    collision_objects[0].primitive_poses[0].position.z = 0.01;
-    collision_objects[0].primitive_poses[0].orientation.w = 1.0;
-
-    //Add the table to the scene
-    collision_objects[0].operation = collision_objects[0].ADD;
-
-    planning_scene_interface.applyCollisionObjects(collision_objects);
-
+  bool success = (move_group.move() == moveit::core::MoveItErrorCode::SUCCESS);
+  RCLCPP_INFO(logger, "Execution: %s", success ? "SUCCESS" : "FAILED");
 }
 
 int main(int argc, char** argv)
 {
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("goToPose_node");
 
-    ros::init(argc, argv, "goToPose_node");
-    ros::NodeHandle nh;
-    ros::AsyncSpinner spinner(1);
-    spinner.start();
+  // Spin the node so MoveGroupInterface can communicate (parameters, services, etc.)
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  std::thread spinner([&executor]() { executor.spin(); });
 
-    ros::WallDuration(1.0).sleep();
-    moveit::planning_interface::MoveGroupInterface group("fr3_arm");
-    moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
+  // Create MoveGroupInterface (ROS 2 requires the node handle)
+  MoveGroupInterface move_group(node, "fr3_arm");
+  PlanningSceneInterface planning_scene_interface;
 
-    group.setPlanningTime(45.0);
+  move_group.setPlanningTime(45.0);
 
-    //add the collisions objects in the scene
-    addCollisionObject(planning_scene_interface);
+  // Let things initialize
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    ros::WallDuration(1.0).sleep();
+  // Add collision objects
+  addCollisionObject(planning_scene_interface, node->get_logger());
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    // plan the move
-    plan_move(group);
+  // Plan
+  plan_move(move_group, node->get_logger());
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    ros::WallDuration(1.0).sleep();
+  // Execute
+  execute_move(move_group, node->get_logger());
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
-    //exexcute the planned path
-    execute_move(group);
-
-    ros::WallDuration(1.0).sleep();
-
-    ros::waitForShutdown();
-    return 0;
-
+  // Clean shutdown
+  executor.cancel();
+  spinner.join();
+  rclcpp::shutdown();
+  return 0;
 }

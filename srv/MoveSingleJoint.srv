@@ -1,6 +1,8 @@
+# Request
 string joint_name
 float64 target_position
 float64 duration
 ---
+# Response
 bool success
 string message

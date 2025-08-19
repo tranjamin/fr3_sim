@@ -1,16 +1,21 @@
-#include <ros/ros.h>
-#include <sensor_msgs/JointState.h>
-#include <actionlib/client/simple_action_client.h>
-#include <control_msgs/FollowJointTrajectoryAction.h>
-#include <trajectory_msgs/JointTrajectoryPoint.h>
+#include <memory>
 #include <map>
 #include <string>
 #include <vector>
+#include <chrono>
+#include <thread>
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 
 // Target joint to move
-const std::string TARGET_JOINT = "fr3_joint7";  // Move the joint7 -> rotate the end effector
-const double TARGET_POSITION = 1.57;  // Radians 90 deg
-const double TRAJECTORY_DURATION = 2.0;  // Seconds
+const std::string TARGET_JOINT = "fr3_joint7";  // rotate EE
+const double TARGET_POSITION = 1.57;            // radians (90°)
+const double TRAJECTORY_DURATION = 2.0;         // seconds
 
 // The joint order expected by the controller
 const std::vector<std::string> CONTROLLER_JOINTS = {
@@ -21,77 +26,106 @@ const std::vector<std::string> CONTROLLER_JOINTS = {
 // Global storage of current joint positions
 std::map<std::string, double> joint_positions;
 
-void jointStateCallback(const sensor_msgs::JointState::ConstPtr& msg) {
-    for (size_t i = 0; i < msg->name.size(); ++i) {
-        joint_positions[msg->name[i]] = msg->position[i];
-    }
-}
-
-int main(int argc, char** argv)
+class JointMover : public rclcpp::Node
 {
-    ros::init(argc, argv, "joint_mover");
-    ros::NodeHandle nh;
+public:
+  using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+  using GoalHandleFollow = rclcpp_action::ClientGoalHandle<FollowJointTrajectory>;
 
-    // Subscribe to /joint_states to get current positions
-    ros::Subscriber joint_state_sub = nh.subscribe("/joint_states", 1, jointStateCallback);
+  JointMover()
+  : Node("joint_mover")
+  {
+    joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states", 10,
+      std::bind(&JointMover::jointStateCallback, this, std::placeholders::_1));
 
-    // Wait until we receive joint positions
-    ros::Rate rate(10);
-    ROS_INFO("Waiting for joint_states...");
-    while (ros::ok()) {
-        ros::spinOnce();
-        bool all_found = true;
-        for (const auto& joint : CONTROLLER_JOINTS) {
-            if (joint_positions.find(joint) == joint_positions.end()) {
-                all_found = false;
-                break;
-            }
+    action_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
+      this, "/fr3/arm_controller/follow_joint_trajectory");
+
+    RCLCPP_INFO(get_logger(), "JointMover node initialized");
+  }
+
+  void run()
+  {
+    // Wait until we receive all joint states
+    RCLCPP_INFO(get_logger(), "Waiting for /joint_states...");
+    rclcpp::Rate rate(10);
+    while (rclcpp::ok()) {
+      bool all_found = true;
+      for (const auto & joint : CONTROLLER_JOINTS) {
+        if (joint_positions.find(joint) == joint_positions.end()) {
+          all_found = false;
+          break;
         }
-        if (all_found) break;
-        rate.sleep();
+      }
+      if (all_found) break;
+      rate.sleep();
+    }
+    RCLCPP_INFO(get_logger(), "Joint states received.");
+
+    // Wait for the action server
+    RCLCPP_INFO(get_logger(), "Waiting for action server...");
+    if (!action_client_->wait_for_action_server(std::chrono::seconds(10))) {
+      RCLCPP_ERROR(get_logger(), "Action server not available after waiting");
+      return;
     }
 
+    // Create goal
+    FollowJointTrajectory::Goal goal_msg;
+    goal_msg.trajectory.joint_names = CONTROLLER_JOINTS;
 
-    // Define the action client (true = spin thread)
-    actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> client(
-        "/fr3/arm_controller/follow_joint_trajectory", true);
-
-    ROS_INFO("Waiting for action server to start...");
-    client.waitForServer();
-    ROS_INFO("Action server started, sending goal.");
-
-    // Create a goal to send
-    control_msgs::FollowJointTrajectoryGoal goal;
-
-    // Specify the joint names you want to move
-    goal.trajectory.joint_names = CONTROLLER_JOINTS; 
-
-    trajectory_msgs::JointTrajectoryPoint point;
-    // Define a single point in the trajectory
-    for (const auto& joint : CONTROLLER_JOINTS) {
-        if (joint == TARGET_JOINT) {
-            point.positions.push_back(TARGET_POSITION);
-        } else {
-            point.positions.push_back(joint_positions[joint]);
-        }
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    for (const auto & joint : CONTROLLER_JOINTS) {
+      if (joint == TARGET_JOINT) {
+        point.positions.push_back(TARGET_POSITION);
+      } else {
+        point.positions.push_back(joint_positions[joint]);
+      }
     }
+    point.time_from_start = rclcpp::Duration::from_seconds(TRAJECTORY_DURATION);
+    goal_msg.trajectory.points.push_back(point);
+    goal_msg.trajectory.header.stamp = now();
 
-    point.time_from_start = ros::Duration(TRAJECTORY_DURATION); // Time to reach the target
+    RCLCPP_INFO(get_logger(), "Sending trajectory goal to move %s", TARGET_JOINT.c_str());
 
-    // Add the point to the trajectory
-    goal.trajectory.points.push_back(point);
+    auto send_goal_options = rclcpp_action::Client<FollowJointTrajectory>::SendGoalOptions();
+    send_goal_options.result_callback = [this](const GoalHandleFollow::WrappedResult & result) {
+      if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+        RCLCPP_INFO(get_logger(), "Movement complete.");
+      } else {
+        RCLCPP_ERROR(get_logger(), "Movement failed or was canceled/aborted.");
+      }
+      rclcpp::shutdown();
+    };
 
-    // Set the header time stamp
-    goal.trajectory.header.stamp = ros::Time::now();
+    action_client_->async_send_goal(goal_msg, send_goal_options);
+  }
 
-    // Send the goal
-    client.sendGoal(goal);
+private:
+  void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+  {
+    for (size_t i = 0; i < msg->name.size(); ++i) {
+      joint_positions[msg->name[i]] = msg->position[i];
+    }
+  }
 
-    // Send and wait
-    ROS_INFO("Sending trajectory to move %s", TARGET_JOINT.c_str());
-    client.sendGoal(goal);
-    client.waitForResult();
-    ROS_INFO("Movement complete.");
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp_action::Client<FollowJointTrajectory>::SharedPtr action_client_;
+};
 
-    return 0;
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<JointMover>();
+
+  // Use an executor to spin callbacks
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+
+  std::thread spin_thread([&executor]() { executor.spin(); });
+
+  node->run();
+
+  spin_thread.join();
+  return 0;
 }
