@@ -2,10 +2,11 @@
 <package format="3">
   <name>fr3_sim</name>
   <version>0.0.0</version>
-  <description>The fr3_sim package</description>
+  <description>A package for the simulation of the FR3 (Franka Research 3) Robot</description>
+  <maintainer email="benjamin.tran@outlook.com.au">tranjamin</maintainer>
+  <license>GPLv3</license>
+  <url type="website">http://github.com/tranjamin/fr3_sim</url>
 
-  <maintainer email="guilhem@todo.todo">guilhem</maintainer>
-  <license>TODO</license>
 
   <!-- build tool -->
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -42,6 +43,8 @@
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>gtest</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>
